@@ -1,0 +1,379 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { Navigation, MapPin, Fuel, MessageSquare, Activity, Send, Car, AlertTriangle } from 'lucide-react';
+
+const apiKey = ""; // Wird vom System zur Laufzeit bereitgestellt
+
+// Hilfsfunktion: Distanz zwischen zwei Koordinaten (Haversine)
+const calcDistance = (lat1, lon1, lat2, lon2) => {
+  const R = 6371; // Erdradius in km
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+            Math.sin(dLon/2) * Math.sin(dLon/2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return R * c;
+};
+
+// Hilfsfunktion: Fetch mit Exponential Backoff für Gemini API
+const fetchWithRetry = async (url, options, maxRetries = 5) => {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      const response = await fetch(url, options);
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      return await response.json();
+    } catch (e) {
+      if (i === maxRetries - 1) throw e;
+      await new Promise(res => setTimeout(res, Math.pow(2, i) * 1000));
+    }
+  }
+};
+
+export default function App() {
+  // States für Tacho und GPS
+  const [speed, setSpeed] = useState(0);
+  const [location, setLocation] = useState({ lat: 51.4556, lng: 7.0116 }); // Start: Essen
+  const [isSimulating, setIsSimulating] = useState(false);
+  const [gpsActive, setGpsActive] = useState(false);
+  
+  // States für KI
+  const [aiInput, setAiInput] = useState("");
+  const [chatHistory, setChatHistory] = useState([
+    { role: 'system', content: 'Hallo! Ich bin dein Roadtrip-Copilot. Sag mir, worauf du Lust hast (z.B. "Ich habe richtig Bock auf etwas Traditionelles!") und ich suche etwas passend zu deinem aktuellen GPS-Standort.' }
+  ]);
+  const [isAiLoading, setIsAiLoading] = useState(false);
+
+  // States für Spritpreise
+  const [fuelData, setFuelData] = useState({ country: "Deutschland", currency: "€", stations: [] });
+
+  const chatEndRef = useRef(null);
+
+  // Auto-Scroll im Chat
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chatHistory]);
+
+  // Echte GPS-Überwachung
+  useEffect(() => {
+    if (isSimulating) return;
+
+    if ("geolocation" in navigator) {
+      let lastPos = null;
+      let lastTime = null;
+
+      const watchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          setGpsActive(true);
+          const { latitude, longitude, speed: gpsSpeed } = pos.coords;
+          setLocation({ lat: latitude, lng: longitude });
+
+          let currentSpeed = 0;
+          if (gpsSpeed !== null) {
+            currentSpeed = gpsSpeed * 3.6; // m/s in km/h
+          } else if (lastPos && lastTime) {
+            // Fallback Berechnung
+            const dist = calcDistance(lastPos.lat, lastPos.lng, latitude, longitude);
+            const timeDiff = (pos.timestamp - lastTime) / 3600000; // in Stunden
+            if (timeDiff > 0) currentSpeed = dist / timeDiff;
+          }
+          setSpeed(Math.round(currentSpeed));
+          
+          lastPos = { lat: latitude, lng: longitude };
+          lastTime = pos.timestamp;
+        },
+        (err) => {
+          console.warn("GPS Fehler:", err);
+          setGpsActive(false);
+        },
+        { enableHighAccuracy: true, maximumAge: 0 }
+      );
+
+      return () => navigator.geolocation.clearWatch(watchId);
+    }
+  }, [isSimulating]);
+
+  // Simulation für die Präsentation (Essen -> Schweiz -> Italien -> Nizza)
+  useEffect(() => {
+    if (!isSimulating) return;
+    
+    let simLat = 51.4556; // Essen
+    let simLng = 7.0116;
+    let simSpeed = 0;
+
+    const interval = setInterval(() => {
+      simLat -= 0.05; // Fahrt nach Süden
+      simLng += (simLat > 47 ? 0.01 : -0.01); // Leichte Kurven
+      
+      // Beschleunigen auf Autobahn
+      if (simSpeed < 120) simSpeed += Math.floor(Math.random() * 10) + 5;
+      else simSpeed += (Math.random() > 0.5 ? 2 : -2); // Geschwindigkeit halten
+
+      setLocation({ lat: simLat, lng: simLng });
+      setSpeed(Math.round(simSpeed));
+      setGpsActive(true);
+
+      // Beenden wenn wir am Mittelmeer sind (ca. Lat 43)
+      if (simLat <= 43.7) {
+        setIsSimulating(false);
+        setSpeed(0);
+      }
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [isSimulating]);
+
+  // Live Spritpreis Update basierend auf GPS (Simuliert durch Latituden-Check)
+  useEffect(() => {
+    const { lat } = location;
+    let country = "Deutschland";
+    let currency = "€";
+    let basePrice = 1.95;
+
+    if (lat < 47.5 && lat >= 45.8) {
+      // Schweiz (Ca. Basel bis Bellinzona)
+      country = "Schweiz"; currency = "CHF"; basePrice = 1.85;
+    } else if (lat < 45.8 && lat > 44) {
+      // Norditalien (Como, Mailand)
+      country = "Italien"; currency = "€"; basePrice = 2.15;
+    } else if (lat <= 44) {
+      // Riviera (Genua bis Nizza)
+      country = "Frankreich / Italien (Küste)"; currency = "€"; basePrice = 2.05;
+    }
+
+    setFuelData({
+      country,
+      currency,
+      stations: [
+        { name: "Autobahn Raststätte", price: (basePrice + 0.15).toFixed(2), distance: "2 km" },
+        { name: "Supermarkt Tankstelle (Spartipp)", price: (basePrice - 0.08).toFixed(2), distance: "6 km" },
+        { name: "Dorf Tankstelle", price: basePrice.toFixed(2), distance: "12 km" }
+      ]
+    });
+  }, [location.lat]);
+
+  // Gemini KI Anfrage
+  const handleAskGemini = async () => {
+    if (!aiInput.trim()) return;
+
+    const userMsg = aiInput;
+    setChatHistory(prev => [...prev, { role: 'user', content: userMsg }]);
+    setAiInput("");
+    setIsAiLoading(true);
+
+    try {
+      const prompt = `Du bist ein ortskundiger Reiseassistent für einen Roadtrip. 
+      Die aktuellen GPS-Koordinaten des Nutzers sind: Latitude ${location.lat.toFixed(4)}, Longitude ${location.lng.toFixed(4)}.
+      (Dieses Gebiet entspricht grob: ${fuelData.country}).
+      Der Nutzer sagt: "${userMsg}".
+      Antworte extrem kurz, präzise und nenne konkrete, real existierende Orte, Sehenswürdigkeiten oder Spezialitäten in der direkten Umgebung dieser GPS-Koordinaten. 
+      Beachte, dass der Nutzer im Auto sitzt und schnelle Tipps braucht.`;
+
+      const payload = {
+        contents: [{ parts: [{ text: prompt }] }],
+        systemInstruction: { parts: [{ text: "Du bist ein hilfreicher KI-Copilot im Auto." }] }
+      };
+
+      const result = await fetchWithRetry(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        }
+      );
+
+      const aiText = result.candidates?.[0]?.content?.parts?.[0]?.text || "Ich konnte die Umgebung gerade nicht scannen. Wir fahren zu schnell!";
+      setChatHistory(prev => [...prev, { role: 'ai', content: aiText }]);
+    } catch (error) {
+      console.error("Gemini API Error:", error);
+      setChatHistory(prev => [...prev, { role: 'ai', content: "Verbindung zum KI-Server fehlgeschlagen. Sind wir gerade im Gotthardtunnel?" }]);
+    } finally {
+      setIsAiLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans p-4 md:p-6 flex flex-col items-center">
+      
+      {/* Header */}
+      <div className="w-full max-w-6xl flex justify-between items-center mb-6">
+        <h1 className="text-2xl font-bold flex items-center gap-2 text-blue-400">
+          <Car className="w-8 h-8" />
+          Roadtrip Copilot
+        </h1>
+        <div className="flex gap-4 items-center">
+          <div className={`flex items-center gap-2 text-sm px-3 py-1 rounded-full ${gpsActive ? 'bg-green-900/50 text-green-400' : 'bg-red-900/50 text-red-400'}`}>
+            <MapPin className="w-4 h-4" />
+            {gpsActive ? 'GPS Aktiv' : 'Suche Signal...'}
+          </div>
+          <button 
+            onClick={() => setIsSimulating(!isSimulating)}
+            className="bg-slate-800 hover:bg-slate-700 text-xs px-3 py-2 rounded-lg border border-slate-600 transition-colors"
+          >
+            {isSimulating ? "Simulation stoppen" : "Fahrt Simulieren"}
+          </button>
+        </div>
+      </div>
+
+      <div className="w-full max-w-6xl grid grid-cols-1 md:grid-cols-3 gap-6">
+        
+        {/* Linke Spalte: Tacho & Route */}
+        <div className="space-y-6 flex flex-col">
+          {/* Tacho Card */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 flex flex-col items-center justify-center relative overflow-hidden shadow-xl">
+            <div className="absolute top-4 left-4 text-slate-500">
+              <Activity className="w-6 h-6" />
+            </div>
+            <div className="w-48 h-48 rounded-full border-8 border-slate-800 flex flex-col items-center justify-center relative bg-slate-950 shadow-inner">
+              <span className="text-6xl font-black text-white">{speed}</span>
+              <span className="text-slate-400 font-medium">km/h</span>
+              {/* Speed Progress Ring Mock */}
+              <svg className="absolute top-0 left-0 w-full h-full -rotate-90 pointer-events-none">
+                <circle 
+                  cx="96" cy="96" r="88" 
+                  fill="none" 
+                  stroke="currentColor" 
+                  strokeWidth="8" 
+                  className={`${speed > 130 ? 'text-red-500' : 'text-blue-500'} transition-all duration-500`}
+                  strokeDasharray="552"
+                  strokeDashoffset={552 - (552 * Math.min(speed, 200)) / 200}
+                />
+              </svg>
+            </div>
+            <div className="mt-6 flex justify-between w-full text-sm text-slate-400 px-4">
+              <div className="flex flex-col items-center">
+                <span className="text-slate-500">Lat</span>
+                <span className="font-mono">{location.lat.toFixed(4)}°</span>
+              </div>
+              <div className="flex flex-col items-center">
+                <span className="text-slate-500">Lng</span>
+                <span className="font-mono">{location.lng.toFixed(4)}°</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Maut & Route Card */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl flex-grow">
+            <h2 className="text-lg font-bold mb-4 flex items-center gap-2">
+              <Navigation className="w-5 h-5 text-purple-400" />
+              Aktuelle Region
+            </h2>
+            <div className="bg-slate-950 rounded-xl p-4 border border-slate-800 mb-4">
+              <div className="text-xl font-semibold text-white">{fuelData.country}</div>
+              <p className="text-sm text-slate-400 mt-1">Essen ➔ Schweiz ➔ Nizza</p>
+            </div>
+
+            {/* Warnungen basierend auf Land */}
+            {fuelData.country === "Italien" && (
+              <div className="flex items-start gap-3 bg-red-950/30 border border-red-900/50 p-3 rounded-lg text-sm text-red-200">
+                <AlertTriangle className="w-5 h-5 text-red-500 shrink-0" />
+                <p>Mailand Area C voraus! City-Maut Registrierung erforderlich.</p>
+              </div>
+            )}
+            {fuelData.country === "Schweiz" && (
+              <div className="flex items-start gap-3 bg-yellow-950/30 border border-yellow-900/50 p-3 rounded-lg text-sm text-yellow-200">
+                <AlertTriangle className="w-5 h-5 text-yellow-500 shrink-0" />
+                <p>E-Vignette erforderlich. Radarwarner sind hier streng verboten!</p>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Mittlere Spalte: Gemini Copilot */}
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl flex flex-col shadow-xl md:col-span-1 h-[600px] md:h-auto">
+          <div className="p-4 border-b border-slate-800 bg-slate-900/50 rounded-t-2xl">
+            <h2 className="text-lg font-bold flex items-center gap-2">
+              <MessageSquare className="w-5 h-5 text-indigo-400" />
+              Gemini Copilot
+            </h2>
+          </div>
+          
+          {/* Chat History */}
+          <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            {chatHistory.map((msg, idx) => (
+              <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                <div className={`max-w-[85%] rounded-2xl p-3 text-sm leading-relaxed ${
+                  msg.role === 'user' 
+                    ? 'bg-blue-600 text-white rounded-br-none' 
+                    : 'bg-slate-800 text-slate-200 rounded-bl-none border border-slate-700'
+                }`}>
+                  {msg.content}
+                </div>
+              </div>
+            ))}
+            {isAiLoading && (
+              <div className="flex justify-start">
+                <div className="bg-slate-800 text-slate-400 rounded-2xl rounded-bl-none p-3 text-sm flex items-center gap-2 border border-slate-700">
+                  <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce"></div>
+                  <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+                  <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }}></div>
+                </div>
+              </div>
+            )}
+            <div ref={chatEndRef} />
+          </div>
+
+          {/* Chat Input */}
+          <div className="p-4 bg-slate-950 rounded-b-2xl border-t border-slate-800">
+            <div className="flex gap-2">
+              <input 
+                type="text" 
+                value={aiInput}
+                onChange={(e) => setAiInput(e.target.value)}
+                onKeyPress={(e) => e.key === 'Enter' && handleAskGemini()}
+                placeholder="Bock auf was Traditionelles?" 
+                className="flex-1 bg-slate-900 border border-slate-700 text-white text-sm rounded-xl px-4 py-3 focus:outline-none focus:border-blue-500 transition-colors"
+              />
+              <button 
+                onClick={handleAskGemini}
+                disabled={isAiLoading || !aiInput.trim()}
+                className="bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 disabled:text-slate-600 text-white rounded-xl px-4 py-2 flex items-center justify-center transition-colors"
+              >
+                <Send className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Rechte Spalte: Live Spritpreise */}
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col">
+          <h2 className="text-lg font-bold mb-6 flex items-center gap-2">
+            <Fuel className="w-5 h-5 text-green-400" />
+            Live Sprit (Umkreis)
+          </h2>
+
+          <div className="space-y-4">
+            {fuelData.stations.map((station, idx) => (
+              <div key={idx} className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex justify-between items-center group hover:border-slate-600 transition-colors">
+                <div>
+                  <div className="font-medium text-slate-200">{station.name}</div>
+                  <div className="text-xs text-slate-500 mt-1 flex items-center gap-1">
+                    <Navigation className="w-3 h-3" /> In {station.distance}
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className={`text-xl font-bold ${idx === 1 ? 'text-green-400' : 'text-white'}`}>
+                    {station.price}
+                    <span className="text-sm text-slate-500 ml-1">{fuelData.currency}</span>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-auto pt-6">
+            <div className="bg-blue-950/30 border border-blue-900/50 rounded-xl p-4">
+              <p className="text-xs text-blue-200 leading-relaxed">
+                <strong className="block text-blue-400 mb-1">KI-Spartipp:</strong>
+                Die Preise variieren je nach GPS-Position. Lass dir von Gemini die nächstgelegene, günstige Supermarkt-Tankstelle auf der Route vorschlagen, um teure Autobahn-Preise zu umgehen!
+              </p>
+            </div>
+          </div>
+
+        </div>
+
+      </div>
+    </div>
+  );
+}
+
