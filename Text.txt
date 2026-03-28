@@ -1,224 +1,109 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Navigation, MapPin, Fuel, MessageSquare, Activity, Send, Car, AlertTriangle, ChevronRight } from 'lucide-react';
+import { MapPin, Fuel, MessageSquare, Send, Car, AlertTriangle, Activity } from 'lucide-react';
 
-const apiKey = ""; // Wird vom System zur Laufzeit bereitgestellt
+const apiKey = "";
 
-// Hilfsfunktion: Distanz zwischen zwei Koordinaten (Haversine)
 const calcDistance = (lat1, lon1, lat2, lon2) => {
   const R = 6371;
   const dLat = (lat2 - lat1) * Math.PI / 180;
   const dLon = (lon2 - lon1) * Math.PI / 180;
-  const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
-            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-            Math.sin(dLon/2) * Math.sin(dLon/2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-  return R * c;
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 };
 
-// Fetch mit Exponential Backoff für Gemini API
 const fetchWithRetry = async (url, options, maxRetries = 5) => {
   for (let i = 0; i < maxRetries; i++) {
     try {
-      const response = await fetch(url, options);
-      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-      return await response.json();
+      const r = await fetch(url, options);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return await r.json();
     } catch (e) {
       if (i === maxRetries - 1) throw e;
-      await new Promise(res => setTimeout(res, Math.pow(2, i) * 1000));
+      await new Promise(res => setTimeout(res, 2 ** i * 1000));
     }
   }
 };
 
-// Routenpunkte mit Koordinaten, Namen und Bildern
-const ROUTE_WAYPOINTS = [
+const WAYPOINTS = [
   {
     name: "Essen",
     country: "Deutschland",
-    lat: 51.4556,
-    lng: 7.0116,
-    image: "https://images.unsplash.com/photo-1570168007204-dfb528c6958f?w=400&q=80",
-    gradient: "from-blue-900 to-slate-800",
-    emoji: "🏭",
-    desc: "Ruhrgebiet"
+    lat: 51.4556, lng: 7.0116,
+    image: "https://images.unsplash.com/photo-1559827291-72f31e14e1d0?w=1200&q=85",
+    accent: "#3b82f6",
+    desc: "Ruhrgebiet · Startpunkt",
+    warning: { type: "info", text: "A3 → A5 Richtung Basel. Tankstop vor der Schweizer Grenze empfohlen!" }
   },
   {
     name: "Basel",
     country: "Schweiz",
-    lat: 47.5596,
-    lng: 7.5886,
-    image: "https://images.unsplash.com/photo-1587974928442-77dc3e0dba72?w=400&q=80",
-    gradient: "from-red-900 to-slate-800",
-    emoji: "🇨🇭",
-    desc: "Rhein & Kunst"
+    lat: 47.5596, lng: 7.5886,
+    image: "https://images.unsplash.com/photo-1559827260-dc66d52bef19?w=1200&q=85",
+    accent: "#ef4444",
+    desc: "Rhein & Kunst · Grenzstadt",
+    warning: { type: "warning", text: "E-Vignette erforderlich. Radarwarner streng verboten in der Schweiz!" }
   },
   {
     name: "Mailand",
     country: "Italien",
-    lat: 45.4654,
-    lng: 9.1859,
-    image: "https://images.unsplash.com/photo-1520175480921-4edfa2983e0f?w=400&q=80",
-    gradient: "from-green-900 to-slate-800",
-    emoji: "🇮🇹",
-    desc: "La Metropolitana"
+    lat: 45.4654, lng: 9.1859,
+    image: "https://images.unsplash.com/photo-1520175480921-4edfa2983e0f?w=1200&q=85",
+    accent: "#22c55e",
+    desc: "La Metropolitana · Mode & Design",
+    warning: { type: "danger", text: "Area C Mailand voraus! City-Maut Registrierung erforderlich." }
   },
   {
     name: "Nizza",
     country: "Frankreich",
-    lat: 43.7102,
-    lng: 7.2620,
-    image: "https://images.unsplash.com/photo-1533929736458-ca588d08c8be?w=400&q=80",
-    gradient: "from-cyan-900 to-slate-800",
-    emoji: "🌊",
-    desc: "Côte d'Azur"
+    lat: 43.7102, lng: 7.2620,
+    image: "https://images.unsplash.com/photo-1533929736458-ca588d08c8be?w=1200&q=85",
+    accent: "#06b6d4",
+    desc: "Côte d'Azur · Ziel",
+    warning: { type: "info", text: "Riviera-Promenade in Nizza ist mautpflichtig. Herzlich willkommen!" }
   }
 ];
 
-// Aktuellen Wegpunkt basierend auf Latitude bestimmen
-const getCurrentWaypointIndex = (lat) => {
+const getWaypointByLat = (lat) => {
   if (lat > 49) return 0;
   if (lat > 46.5) return 1;
   if (lat > 44) return 2;
   return 3;
 };
 
-// Animated Speedometer SVG
-const Speedometer = ({ speed }) => {
-  const maxSpeed = 200;
-  const radius = 88;
-  const circumference = 2 * Math.PI * radius;
-  const clampedSpeed = Math.min(speed, maxSpeed);
-  const dashOffset = circumference - (circumference * clampedSpeed) / maxSpeed;
+const getFuel = (lat) => {
+  if (lat < 47.5 && lat >= 45.8) return { currency: "CHF", base: 1.85 };
+  if (lat < 45.8 && lat > 44)    return { currency: "€",   base: 2.15 };
+  if (lat <= 44)                  return { currency: "€",   base: 2.05 };
+  return { currency: "€", base: 1.95 };
+};
 
-  const getSpeedColor = () => {
-    if (speed < 60) return '#22d3ee';   // cyan
-    if (speed < 100) return '#3b82f6';  // blue
-    if (speed < 130) return '#f59e0b';  // amber
-    return '#ef4444';                    // red
-  };
-
-  const needleAngle = -140 + (clampedSpeed / maxSpeed) * 280;
-
+const Speedometer = ({ speed, accent }) => {
+  const max = 200, r = 72;
+  const circ = 2 * Math.PI * r;
+  const offset = circ - (circ * Math.min(speed, max)) / max;
+  const needleAngle = -140 + (Math.min(speed, max) / max) * 280;
   return (
-    <div className="relative flex items-center justify-center" style={{ width: 200, height: 200 }}>
-      <svg width="200" height="200" viewBox="0 0 200 200">
-        {/* Background ring */}
-        <circle cx="100" cy="100" r={radius} fill="none" stroke="#1e293b" strokeWidth="12" />
-        {/* Speed arc */}
-        <circle
-          cx="100" cy="100" r={radius}
-          fill="none"
-          stroke={getSpeedColor()}
-          strokeWidth="12"
-          strokeDasharray={circumference}
-          strokeDashoffset={dashOffset}
-          strokeLinecap="round"
-          transform="rotate(-90 100 100)"
-          style={{ transition: 'stroke-dashoffset 0.6s ease, stroke 0.4s ease', filter: `drop-shadow(0 0 8px ${getSpeedColor()})` }}
+    <div className="relative flex items-center justify-center" style={{ width: 180, height: 180 }}>
+      <svg width="180" height="180" viewBox="0 0 180 180">
+        <circle cx="90" cy="90" r={r} fill="none" stroke="#1e293b" strokeWidth="10" />
+        <circle cx="90" cy="90" r={r} fill="none" stroke={accent} strokeWidth="10"
+          strokeDasharray={circ} strokeDashoffset={offset} strokeLinecap="round"
+          transform="rotate(-90 90 90)"
+          style={{ transition: 'stroke-dashoffset 0.5s ease', filter: `drop-shadow(0 0 6px ${accent})` }}
         />
-        {/* Tick marks */}
-        {[0, 50, 100, 150, 200].map((mark) => {
-          const angle = -140 + (mark / maxSpeed) * 280;
-          const rad = (angle * Math.PI) / 180;
-          const x1 = 100 + 78 * Math.cos(rad);
-          const y1 = 100 + 78 * Math.sin(rad);
-          const x2 = 100 + 68 * Math.cos(rad);
-          const y2 = 100 + 68 * Math.sin(rad);
-          return <line key={mark} x1={x1} y1={y1} x2={x2} y2={y2} stroke="#475569" strokeWidth="2" />;
+        {[0, 50, 100, 150, 200].map(m => {
+          const a = ((-140 + (m / max) * 280) * Math.PI) / 180;
+          return <line key={m} x1={90 + 63 * Math.cos(a)} y1={90 + 63 * Math.sin(a)} x2={90 + 54 * Math.cos(a)} y2={90 + 54 * Math.sin(a)} stroke="#334155" strokeWidth="2" />;
         })}
-        {/* Needle */}
-        <g transform={`rotate(${needleAngle} 100 100)`} style={{ transition: 'transform 0.6s ease' }}>
-          <polygon points="100,24 97,100 103,100" fill={getSpeedColor()} opacity="0.9" />
+        <g transform={`rotate(${needleAngle} 90 90)`} style={{ transition: 'transform 0.5s ease' }}>
+          <polygon points="90,18 87,90 93,90" fill={accent} opacity="0.9" />
         </g>
-        {/* Center dot */}
-        <circle cx="100" cy="100" r="8" fill="#0f172a" stroke={getSpeedColor()} strokeWidth="3" />
+        <circle cx="90" cy="90" r="7" fill="#0f172a" stroke={accent} strokeWidth="3" />
       </svg>
-      {/* Speed text overlay */}
-      <div className="absolute flex flex-col items-center" style={{ top: '55%' }}>
-        <span className="text-4xl font-black text-white leading-none">{speed}</span>
-        <span className="text-slate-400 text-xs font-semibold tracking-widest">KM/H</span>
-      </div>
-    </div>
-  );
-};
-
-// City Hero Image Card
-const CityHeroCard = ({ waypoint, isActive, isPassed }) => {
-  return (
-    <div className={`relative rounded-xl overflow-hidden transition-all duration-500 ${
-      isActive ? 'ring-2 ring-blue-400 shadow-lg shadow-blue-500/20' : ''
-    } ${isPassed ? 'opacity-60' : ''}`}>
-      <div className={`absolute inset-0 bg-gradient-to-b ${waypoint.gradient} opacity-70`} />
-      <img
-        src={waypoint.image}
-        alt={waypoint.name}
-        className="w-full h-24 object-cover"
-        onError={(e) => { e.target.style.display = 'none'; }}
-      />
-      <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent" />
-      <div className="absolute bottom-0 left-0 right-0 p-2">
-        <div className="flex items-center gap-1">
-          <span className="text-sm">{waypoint.emoji}</span>
-          <span className="text-white font-bold text-sm">{waypoint.name}</span>
-          {isActive && <span className="ml-auto w-2 h-2 bg-blue-400 rounded-full animate-pulse" />}
-          {isPassed && <span className="ml-auto text-green-400 text-xs">✓</span>}
-        </div>
-        <p className="text-slate-300 text-xs">{waypoint.desc}</p>
-      </div>
-    </div>
-  );
-};
-
-// Route Timeline Component
-const RouteTimeline = ({ currentWaypointIndex, location }) => {
-  const totalDistance = 1100; // km Essen to Nizza approx
-  const startLat = ROUTE_WAYPOINTS[0].lat;
-  const endLat = ROUTE_WAYPOINTS[3].lat;
-  const progress = Math.max(0, Math.min(100, ((startLat - location.lat) / (startLat - endLat)) * 100));
-
-  return (
-    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl">
-      <h2 className="text-sm font-bold mb-4 flex items-center gap-2 text-slate-300">
-        <Navigation className="w-4 h-4 text-purple-400" />
-        Route · Essen → Nizza
-        <span className="ml-auto text-xs text-slate-500">{Math.round(progress)}%</span>
-      </h2>
-
-      {/* Progress bar */}
-      <div className="relative h-1.5 bg-slate-800 rounded-full mb-5 overflow-hidden">
-        <div
-          className="h-full bg-gradient-to-r from-blue-500 to-cyan-400 rounded-full transition-all duration-1000"
-          style={{ width: `${progress}%` }}
-        />
-      </div>
-
-      {/* Waypoint grid */}
-      <div className="grid grid-cols-4 gap-2">
-        {ROUTE_WAYPOINTS.map((wp, idx) => (
-          <CityHeroCard
-            key={wp.name}
-            waypoint={wp}
-            isActive={idx === currentWaypointIndex}
-            isPassed={idx < currentWaypointIndex}
-          />
-        ))}
-      </div>
-
-      {/* Connector line */}
-      <div className="flex items-center justify-between mt-3 px-2">
-        {ROUTE_WAYPOINTS.map((wp, idx) => (
-          <React.Fragment key={wp.name}>
-            <div className={`w-3 h-3 rounded-full border-2 transition-colors duration-300 ${
-              idx < currentWaypointIndex ? 'bg-green-500 border-green-400' :
-              idx === currentWaypointIndex ? 'bg-blue-400 border-blue-300 shadow-[0_0_6px_rgba(96,165,250,0.8)]' :
-              'bg-slate-700 border-slate-600'
-            }`} />
-            {idx < ROUTE_WAYPOINTS.length - 1 && (
-              <div className={`flex-1 h-0.5 mx-1 transition-colors duration-300 ${
-                idx < currentWaypointIndex ? 'bg-green-500' : 'bg-slate-700'
-              }`} />
-            )}
-          </React.Fragment>
-        ))}
+      <div className="absolute flex flex-col items-center" style={{ top: '58%' }}>
+        <span className="text-3xl font-black text-white leading-none">{speed}</span>
+        <span className="text-xs text-slate-400 tracking-widest">KM/H</span>
       </div>
     </div>
   );
@@ -229,342 +114,313 @@ export default function App() {
   const [location, setLocation] = useState({ lat: 51.4556, lng: 7.0116 });
   const [isSimulating, setIsSimulating] = useState(false);
   const [gpsActive, setGpsActive] = useState(false);
-
+  const [gpsError, setGpsError] = useState(null);
+  const [displayIdx, setDisplayIdx] = useState(0);
+  const [manualCity, setManualCity] = useState(false);
   const [aiInput, setAiInput] = useState("");
   const [chatHistory, setChatHistory] = useState([
-    { role: 'system', content: 'Hallo! Ich bin dein Roadtrip-Copilot. Sag mir, worauf du Lust hast (z.B. "Ich habe richtig Bock auf etwas Traditionelles!") und ich suche etwas passend zu deinem aktuellen GPS-Standort.' }
+    { role: 'ai', content: 'Hallo! Sag mir, worauf du Lust hast – ich finde etwas passend zu deinem GPS-Standort.' }
   ]);
   const [isAiLoading, setIsAiLoading] = useState(false);
-
-  const [fuelData, setFuelData] = useState({ country: "Deutschland", currency: "€", stations: [] });
-
   const chatEndRef = useRef(null);
-  const currentWaypointIndex = getCurrentWaypointIndex(location.lat);
 
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [chatHistory]);
+  const gpsIdx = getWaypointByLat(location.lat);
+  const active = WAYPOINTS[displayIdx];
+  const startLat = WAYPOINTS[0].lat, endLat = WAYPOINTS[3].lat;
+  const progress = Math.max(0, Math.min(100, ((startLat - location.lat) / (startLat - endLat)) * 100));
+  const fuel = getFuel(location.lat);
 
-  // Echte GPS-Überwachung
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatHistory]);
+
+  // GPS
   useEffect(() => {
     if (isSimulating) return;
-    if (!("geolocation" in navigator)) return;
-
-    let lastPos = null;
-    let lastTime = null;
-
-    const watchId = navigator.geolocation.watchPosition(
+    if (!("geolocation" in navigator)) {
+      setGpsError("GPS nicht verfügbar");
+      return;
+    }
+    setGpsError(null);
+    let lastPos = null, lastTime = null;
+    const id = navigator.geolocation.watchPosition(
       (pos) => {
         setGpsActive(true);
-        const { latitude, longitude, speed: gpsSpeed } = pos.coords;
+        setGpsError(null);
+        const { latitude, longitude, speed: gs } = pos.coords;
         setLocation({ lat: latitude, lng: longitude });
-
-        let currentSpeed = 0;
-        if (gpsSpeed !== null) {
-          currentSpeed = gpsSpeed * 3.6;
-        } else if (lastPos && lastTime) {
-          const dist = calcDistance(lastPos.lat, lastPos.lng, latitude, longitude);
-          const timeDiff = (pos.timestamp - lastTime) / 3600000;
-          if (timeDiff > 0) currentSpeed = dist / timeDiff;
+        let s = gs !== null ? gs * 3.6 : 0;
+        if (!s && lastPos && lastTime) {
+          const d = calcDistance(lastPos.lat, lastPos.lng, latitude, longitude);
+          const t = (pos.timestamp - lastTime) / 3600000;
+          if (t > 0) s = d / t;
         }
-        setSpeed(Math.round(currentSpeed));
+        setSpeed(Math.round(s));
+        if (!manualCity) setDisplayIdx(getWaypointByLat(latitude));
         lastPos = { lat: latitude, lng: longitude };
         lastTime = pos.timestamp;
       },
-      (err) => { console.warn("GPS Fehler:", err); setGpsActive(false); },
-      { enableHighAccuracy: true, maximumAge: 0 }
+      (err) => {
+        setGpsActive(false);
+        const msgs = {
+          1: "GPS-Zugriff verweigert – bitte erlauben",
+          2: "GPS-Signal nicht verfügbar",
+          3: "GPS-Anfrage Timeout"
+        };
+        setGpsError(msgs[err.code] || "GPS-Fehler");
+      },
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
     );
+    return () => navigator.geolocation.clearWatch(id);
+  }, [isSimulating, manualCity]);
 
-    return () => navigator.geolocation.clearWatch(watchId);
-  }, [isSimulating]);
-
-  // Simulation: Essen → Schweiz → Italien → Nizza
+  // Simulation
   useEffect(() => {
     if (!isSimulating) return;
-
-    let simLat = 51.4556;
-    let simLng = 7.0116;
-    let simSpeed = 0;
-
-    const interval = setInterval(() => {
-      simLat -= 0.05;
-      simLng += (simLat > 47 ? 0.01 : -0.01);
-
-      if (simSpeed < 120) simSpeed += Math.floor(Math.random() * 10) + 5;
-      else simSpeed += (Math.random() > 0.5 ? 2 : -2);
-
-      setLocation({ lat: simLat, lng: simLng });
-      setSpeed(Math.round(simSpeed));
+    let sLat = 51.4556, sLng = 7.0116, sSpeed = 0;
+    const iv = setInterval(() => {
+      sLat -= 0.05;
+      sLng += sLat > 47 ? 0.01 : -0.01;
+      sSpeed = sSpeed < 120 ? sSpeed + Math.floor(Math.random() * 10) + 5 : sSpeed + (Math.random() > 0.5 ? 2 : -2);
+      setLocation({ lat: sLat, lng: sLng });
+      setSpeed(Math.round(sSpeed));
       setGpsActive(true);
-
-      if (simLat <= 43.7) {
-        setIsSimulating(false);
-        setSpeed(0);
-      }
+      if (!manualCity) setDisplayIdx(getWaypointByLat(sLat));
+      if (sLat <= 43.7) { setIsSimulating(false); setSpeed(0); }
     }, 2000);
+    return () => clearInterval(iv);
+  }, [isSimulating, manualCity]);
 
-    return () => clearInterval(interval);
-  }, [isSimulating]);
-
-  // Live Spritpreis Update basierend auf GPS
-  useEffect(() => {
-    const { lat } = location;
-    let country = "Deutschland";
-    let currency = "€";
-    let basePrice = 1.95;
-
-    if (lat < 47.5 && lat >= 45.8) {
-      country = "Schweiz"; currency = "CHF"; basePrice = 1.85;
-    } else if (lat < 45.8 && lat > 44) {
-      country = "Italien"; currency = "€"; basePrice = 2.15;
-    } else if (lat <= 44) {
-      country = "Frankreich / Italien (Küste)"; currency = "€"; basePrice = 2.05;
-    }
-
-    setFuelData({
-      country,
-      currency,
-      stations: [
-        { name: "Autobahn Raststätte", price: (basePrice + 0.15).toFixed(2), distance: "2 km" },
-        { name: "Supermarkt Tankstelle (Spartipp)", price: (basePrice - 0.08).toFixed(2), distance: "6 km" },
-        { name: "Dorf Tankstelle", price: basePrice.toFixed(2), distance: "12 km" }
-      ]
-    });
-  }, [location.lat]);
-
-  // Gemini KI Anfrage
   const handleAskGemini = async () => {
     if (!aiInput.trim()) return;
-
-    const userMsg = aiInput;
-    setChatHistory(prev => [...prev, { role: 'user', content: userMsg }]);
+    if (!apiKey) {
+      setChatHistory(p => [...p,
+        { role: 'user', content: aiInput },
+        { role: 'ai', content: "Kein API-Key hinterlegt. Bitte füge deinen Gemini API-Key in der App ein." }
+      ]);
+      setAiInput("");
+      return;
+    }
+    const msg = aiInput;
+    setChatHistory(p => [...p, { role: 'user', content: msg }]);
     setAiInput("");
     setIsAiLoading(true);
-
     try {
-      const currentCity = ROUTE_WAYPOINTS[currentWaypointIndex];
-      const prompt = `Du bist ein ortskundiger Reiseassistent für einen Roadtrip von Essen nach Nizza.
-      Die aktuellen GPS-Koordinaten des Nutzers sind: Latitude ${location.lat.toFixed(4)}, Longitude ${location.lng.toFixed(4)}.
-      Nächste Stadt/Region: ${currentCity.name}, ${currentCity.country}.
-      Der Nutzer sagt: "${userMsg}".
-      Antworte extrem kurz (max. 3 Sätze), nenne konkrete real existierende Orte oder Sehenswürdigkeiten in dieser Region.
-      Der Nutzer sitzt im Auto und braucht schnelle, praktische Tipps.`;
-
-      const payload = {
-        contents: [{ parts: [{ text: prompt }] }],
-        systemInstruction: { parts: [{ text: "Du bist ein hilfreicher KI-Copilot im Auto für einen Roadtrip Essen → Nizza." }] }
-      };
-
-      const result = await fetchWithRetry(
+      const prompt = `Du bist ein Roadtrip-Assistent (Essen → Nizza).
+GPS: ${location.lat.toFixed(4)}, ${location.lng.toFixed(4)}. Region: ${active.name}, ${active.country}.
+Nutzer: "${msg}"
+Antworte in max. 2 Sätzen mit konkreten Orten in der Nähe.`;
+      const res = await fetchWithRetry(
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`,
-        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }) }
       );
-
-      const aiText = result.candidates?.[0]?.content?.parts?.[0]?.text || "Ich konnte die Umgebung gerade nicht scannen. Wir fahren zu schnell!";
-      setChatHistory(prev => [...prev, { role: 'ai', content: aiText }]);
-    } catch (error) {
-      console.error("Gemini API Error:", error);
-      setChatHistory(prev => [...prev, { role: 'ai', content: "Verbindung zum KI-Server fehlgeschlagen. Sind wir gerade im Gotthardtunnel?" }]);
+      const text = res.candidates?.[0]?.content?.parts?.[0]?.text || "Ich konnte die Umgebung nicht scannen.";
+      setChatHistory(p => [...p, { role: 'ai', content: text }]);
+    } catch {
+      setChatHistory(p => [...p, { role: 'ai', content: "Verbindung fehlgeschlagen. Sind wir im Gotthardtunnel?" }]);
     } finally {
       setIsAiLoading(false);
     }
   };
 
-  const activeWaypoint = ROUTE_WAYPOINTS[currentWaypointIndex];
+  const warningColors = {
+    info:    'bg-blue-950/60 border-blue-800/60 text-blue-200',
+    warning: 'bg-yellow-950/60 border-yellow-800/60 text-yellow-200',
+    danger:  'bg-red-950/60 border-red-800/60 text-red-200',
+  };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans p-4 md:p-6 flex flex-col items-center">
+    <div className="min-h-screen bg-slate-950 text-white font-sans overflow-x-hidden">
 
-      {/* Header */}
-      <div className="w-full max-w-6xl flex justify-between items-center mb-6">
-        <h1 className="text-2xl font-bold flex items-center gap-2 text-blue-400">
-          <Car className="w-8 h-8" />
-          Roadtrip Copilot
-          <span className="text-sm font-normal text-slate-400 ml-2 hidden sm:block">
-            Essen <ChevronRight className="inline w-3 h-3" /> Nizza
-          </span>
-        </h1>
-        <div className="flex gap-3 items-center">
-          <div className={`flex items-center gap-2 text-xs px-3 py-1.5 rounded-full ${gpsActive ? 'bg-green-900/50 text-green-400' : 'bg-red-900/50 text-red-400'}`}>
-            <MapPin className="w-3 h-3" />
-            {gpsActive ? 'GPS Aktiv' : 'Suche Signal...'}
+      {/* ── HERO ─────────────────────────────────────── */}
+      <div className="relative w-full" style={{ height: '75vh', minHeight: 480 }}>
+        {WAYPOINTS.map((wp, i) => (
+          <div key={wp.name} className="absolute inset-0 transition-opacity duration-700"
+            style={{ opacity: i === displayIdx ? 1 : 0 }}>
+            <img src={wp.image} alt={wp.name} className="w-full h-full object-cover" />
           </div>
-          <button
-            onClick={() => setIsSimulating(!isSimulating)}
-            className={`text-xs px-3 py-2 rounded-lg border transition-colors ${
-              isSimulating
-                ? 'bg-red-900/40 border-red-700 text-red-300 hover:bg-red-900/60'
-                : 'bg-slate-800 border-slate-600 hover:bg-slate-700'
-            }`}
-          >
-            {isSimulating ? "⏹ Stop" : "▶ Simulieren"}
+        ))}
+        {/* Fade: dark top for readability, fades to bg-slate-950 at bottom */}
+        <div className="absolute inset-0 bg-gradient-to-b from-black/65 via-black/5 to-slate-950 pointer-events-none" />
+
+        {/* Header */}
+        <div className="relative z-10 flex items-center justify-between px-5 pt-5">
+          <div className="flex items-center gap-2">
+            <Car className="w-5 h-5 text-white" />
+            <span className="font-bold text-white text-sm tracking-wide">Roadtrip Copilot</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className={`text-xs px-2.5 py-1 rounded-full flex items-center gap-1 backdrop-blur-sm border ${
+              gpsActive ? 'bg-green-500/20 text-green-300 border-green-500/30' : 'bg-red-500/20 text-red-300 border-red-500/30'
+            }`}>
+              <MapPin className="w-3 h-3" />
+              {gpsActive ? 'GPS' : 'Suche...'}
+            </div>
+            <button
+              onClick={() => setIsSimulating(s => !s)}
+              className={`text-xs px-3 py-1 rounded-full backdrop-blur-sm border transition-all ${
+                isSimulating ? 'bg-red-500/30 border-red-400/40 text-red-200' : 'bg-white/10 border-white/20 text-white'
+              }`}
+            >
+              {isSimulating ? '⏹ Stop' : '▶ Demo'}
+            </button>
+          </div>
+        </div>
+
+        {/* GPS error banner */}
+        {gpsError && (
+          <div className="relative z-10 mx-4 mt-3 bg-red-950/70 border border-red-700/50 rounded-xl px-4 py-2 text-xs text-red-200 backdrop-blur-sm flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 shrink-0" />
+            {gpsError}
+          </div>
+        )}
+
+        {/* City name — large */}
+        <div className="absolute bottom-14 left-0 right-0 px-6 z-10">
+          <div className="text-xs font-semibold tracking-widest uppercase mb-1" style={{ color: active.accent }}>
+            {active.country} · {Math.round(progress)}% der Route
+          </div>
+          <h1 className="text-6xl font-black tracking-tight text-white drop-shadow-2xl leading-none">
+            {active.name}
+          </h1>
+          <p className="text-white/55 text-sm mt-1">{active.desc}</p>
+          <div className="mt-3 h-1 bg-white/10 rounded-full w-44 overflow-hidden">
+            <div className="h-full rounded-full transition-all duration-1000"
+              style={{ width: `${progress}%`, backgroundColor: active.accent, boxShadow: `0 0 8px ${active.accent}` }} />
+          </div>
+        </div>
+      </div>
+
+      {/* ── CITY TILES ──────────────────────────────── */}
+      <div className="px-4 -mt-2 relative z-20">
+        <p className="text-xs text-slate-500 uppercase tracking-widest mb-3 px-1">Route</p>
+        <div className="flex gap-3 overflow-x-auto pb-1" style={{ scrollbarWidth: 'none' }}>
+          {WAYPOINTS.map((wp, i) => {
+            const isPassed = i < gpsIdx;
+            const isActive = i === displayIdx;
+            return (
+              <button key={wp.name} onClick={() => { setDisplayIdx(i); setManualCity(true); }}
+                className="relative flex-shrink-0 rounded-2xl overflow-hidden focus:outline-none active:scale-95 transition-transform"
+                style={{
+                  width: 120, height: 85,
+                  boxShadow: isActive ? `0 0 0 2.5px ${wp.accent}, 0 6px 20px ${wp.accent}50` : 'none',
+                  opacity: isPassed && !isActive ? 0.5 : 1
+                }}
+              >
+                <img src={wp.image} alt={wp.name} className="absolute inset-0 w-full h-full object-cover" />
+                <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/20 to-transparent" />
+                {isPassed && <div className="absolute top-2 right-2 w-4 h-4 rounded-full bg-green-500 flex items-center justify-center text-xs">✓</div>}
+                {isActive && <div className="absolute top-2 right-2 w-2 h-2 rounded-full animate-pulse" style={{ backgroundColor: wp.accent }} />}
+                <div className="absolute bottom-0 left-0 right-0 p-2 text-left">
+                  <div className="text-white font-bold text-xs leading-tight">{wp.name}</div>
+                  <div className="text-white/45 text-xs">{wp.country}</div>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+        {manualCity && (
+          <button onClick={() => { setManualCity(false); setDisplayIdx(gpsIdx); }}
+            className="mt-2 text-xs text-slate-500 hover:text-slate-300 transition-colors">
+            ← Zurück zu GPS
           </button>
-        </div>
+        )}
       </div>
 
-      {/* Route Timeline (full width) */}
-      <div className="w-full max-w-6xl mb-6">
-        <RouteTimeline currentWaypointIndex={currentWaypointIndex} location={location} />
-      </div>
+      {/* ── DASHBOARD ───────────────────────────────── */}
+      <div className="px-4 mt-5 pb-12 space-y-4">
 
-      <div className="w-full max-w-6xl grid grid-cols-1 md:grid-cols-3 gap-6">
-
-        {/* Linke Spalte: Tacho & Warnungen */}
-        <div className="space-y-6 flex flex-col">
-          {/* Tacho Card */}
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 flex flex-col items-center justify-center relative overflow-hidden shadow-xl">
-            {/* City background glow */}
-            <div className={`absolute inset-0 bg-gradient-to-b ${activeWaypoint.gradient} opacity-10 pointer-events-none`} />
-
-            <div className="flex items-center gap-2 mb-3 text-slate-400 text-sm self-start">
-              <Activity className="w-4 h-4" />
-              <span>Tacho</span>
-              <span className="ml-auto text-xs">{activeWaypoint.emoji} {activeWaypoint.name}</span>
+        {/* Tacho + Sprit */}
+        <div className="grid grid-cols-2 gap-4">
+          <div className="bg-slate-900/80 backdrop-blur border border-slate-800 rounded-2xl p-4 flex flex-col items-center">
+            <div className="flex items-center gap-1.5 self-start mb-1 text-slate-400 text-xs">
+              <Activity className="w-3 h-3" /> Tacho
             </div>
-
-            <Speedometer speed={speed} />
-
-            <div className="mt-4 flex justify-between w-full text-xs text-slate-400 px-2">
-              <div className="flex flex-col items-center bg-slate-800/50 rounded-lg px-3 py-2">
-                <span className="text-slate-500">Lat</span>
-                <span className="font-mono text-slate-200">{location.lat.toFixed(3)}°</span>
-              </div>
-              <div className="flex flex-col items-center bg-slate-800/50 rounded-lg px-3 py-2">
-                <span className="text-slate-500">Lng</span>
-                <span className="font-mono text-slate-200">{location.lng.toFixed(3)}°</span>
-              </div>
-            </div>
+            <Speedometer speed={speed} accent={active.accent} />
+            <div className="mt-1 text-xs text-slate-500 font-mono">{location.lat.toFixed(3)}° {location.lng.toFixed(3)}°</div>
           </div>
 
-          {/* Warnungen Card */}
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl flex-grow">
-            <h2 className="text-sm font-bold mb-3 text-slate-300">Regionale Hinweise</h2>
-            <div className="text-lg font-semibold text-white mb-1">{fuelData.country}</div>
-
-            {fuelData.country === "Italien" && (
-              <div className="flex items-start gap-3 bg-red-950/30 border border-red-900/50 p-3 rounded-lg text-sm text-red-200 mt-3">
-                <AlertTriangle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
-                <p>Mailand Area C voraus! City-Maut Registrierung erforderlich.</p>
-              </div>
-            )}
-            {fuelData.country === "Schweiz" && (
-              <div className="flex items-start gap-3 bg-yellow-950/30 border border-yellow-900/50 p-3 rounded-lg text-sm text-yellow-200 mt-3">
-                <AlertTriangle className="w-5 h-5 text-yellow-500 shrink-0 mt-0.5" />
-                <p>E-Vignette erforderlich. Radarwarner streng verboten!</p>
-              </div>
-            )}
-            {fuelData.country === "Deutschland" && (
-              <div className="flex items-start gap-3 bg-blue-950/30 border border-blue-900/50 p-3 rounded-lg text-sm text-blue-200 mt-3">
-                <Navigation className="w-5 h-5 text-blue-400 shrink-0 mt-0.5" />
-                <p>A3 → A5 Richtung Basel. Tankstop vor der Schweizer Grenze empfohlen!</p>
-              </div>
-            )}
-            {fuelData.country.includes("Frankreich") && (
-              <div className="flex items-start gap-3 bg-cyan-950/30 border border-cyan-900/50 p-3 rounded-lg text-sm text-cyan-200 mt-3">
-                <MapPin className="w-5 h-5 text-cyan-400 shrink-0 mt-0.5" />
-                <p>Côte d'Azur! Riviera-Promenade in Nizza ist mautpflichtig.</p>
-              </div>
-            )}
+          <div className="bg-slate-900/80 backdrop-blur border border-slate-800 rounded-2xl p-4">
+            <div className="flex items-center gap-1.5 mb-3 text-slate-400 text-xs">
+              <Fuel className="w-3 h-3 text-green-400" /> Live Sprit
+            </div>
+            <div className="space-y-2.5">
+              {[
+                { label: "Autobahn",   price: (fuel.base + 0.15).toFixed(2) },
+                { label: "Supermarkt", price: (fuel.base - 0.08).toFixed(2), best: true },
+                { label: "Dorf",       price: fuel.base.toFixed(2) },
+              ].map((s, i) => (
+                <div key={i} className="flex justify-between items-center">
+                  <span className={`text-xs ${s.best ? 'text-green-400' : 'text-slate-400'}`}>{s.label}</span>
+                  <span className={`font-bold text-sm ${s.best ? 'text-green-400' : 'text-white'}`}>
+                    {s.price} <span className="text-xs font-normal text-slate-500">{fuel.currency}</span>
+                  </span>
+                </div>
+              ))}
+            </div>
+            <div className="mt-3 text-xs text-slate-500 border-t border-slate-800 pt-2">
+              {active.country} · live
+            </div>
           </div>
         </div>
 
-        {/* Mittlere Spalte: Gemini Copilot */}
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl flex flex-col shadow-xl md:col-span-1 h-[500px] md:h-auto">
-          <div className="p-4 border-b border-slate-800 flex items-center gap-3">
-            <div className="w-8 h-8 rounded-full bg-indigo-600/30 border border-indigo-500/50 flex items-center justify-center">
-              <MessageSquare className="w-4 h-4 text-indigo-400" />
+        {/* Regional warning */}
+        {active.warning && (
+          <div className={`flex items-start gap-3 border rounded-2xl p-4 text-sm ${warningColors[active.warning.type]}`}>
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+            <p>{active.warning.text}</p>
+          </div>
+        )}
+
+        {/* Gemini */}
+        <div className="bg-slate-900/80 backdrop-blur border border-slate-800 rounded-2xl overflow-hidden">
+          <div className="flex items-center gap-3 px-4 py-3 border-b border-slate-800">
+            <div className="w-8 h-8 rounded-full flex items-center justify-center shrink-0"
+              style={{ backgroundColor: `${active.accent}25`, border: `1px solid ${active.accent}40` }}>
+              <MessageSquare className="w-4 h-4" style={{ color: active.accent }} />
             </div>
             <div>
-              <h2 className="text-sm font-bold text-white">Gemini Copilot</h2>
-              <p className="text-xs text-slate-500">KI-Reiseassistent · {activeWaypoint.name} Region</p>
+              <div className="text-sm font-semibold">Gemini Copilot</div>
+              <div className="text-xs text-slate-500">{active.name} Region</div>
             </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto p-4 space-y-3">
-            {chatHistory.map((msg, idx) => (
-              <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                <div className={`max-w-[85%] rounded-2xl p-3 text-sm leading-relaxed ${
+          <div className="h-52 overflow-y-auto p-4 space-y-3">
+            {chatHistory.map((msg, i) => (
+              <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                <div className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm leading-relaxed ${
                   msg.role === 'user'
-                    ? 'bg-blue-600 text-white rounded-br-none'
+                    ? 'text-white rounded-br-none'
                     : 'bg-slate-800 text-slate-200 rounded-bl-none border border-slate-700'
-                }`}>
+                }`} style={msg.role === 'user' ? { backgroundColor: active.accent } : {}}>
                   {msg.content}
                 </div>
               </div>
             ))}
             {isAiLoading && (
               <div className="flex justify-start">
-                <div className="bg-slate-800 text-slate-400 rounded-2xl rounded-bl-none p-3 text-sm flex items-center gap-2 border border-slate-700">
-                  <div className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce" />
-                  <div className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }} />
-                  <div className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }} />
+                <div className="bg-slate-800 border border-slate-700 rounded-2xl rounded-bl-none px-3 py-2 flex gap-1">
+                  {[0, 0.15, 0.3].map((d, i) => (
+                    <div key={i} className="w-1.5 h-1.5 rounded-full animate-bounce"
+                      style={{ backgroundColor: active.accent, animationDelay: `${d}s` }} />
+                  ))}
                 </div>
               </div>
             )}
             <div ref={chatEndRef} />
           </div>
 
-          <div className="p-4 bg-slate-950/50 rounded-b-2xl border-t border-slate-800">
+          <div className="p-3 border-t border-slate-800">
             <div className="flex gap-2">
-              <input
-                type="text"
-                value={aiInput}
-                onChange={(e) => setAiInput(e.target.value)}
-                onKeyPress={(e) => e.key === 'Enter' && handleAskGemini()}
-                placeholder={`Tipps für ${activeWaypoint.name}?`}
-                className="flex-1 bg-slate-900 border border-slate-700 text-white text-sm rounded-xl px-4 py-3 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition-colors"
+              <input type="text" value={aiInput}
+                onChange={e => setAiInput(e.target.value)}
+                onKeyPress={e => e.key === 'Enter' && handleAskGemini()}
+                placeholder={`Tipps für ${active.name}?`}
+                className="flex-1 bg-slate-900 border border-slate-700 text-white text-sm rounded-xl px-4 py-2.5 focus:outline-none focus:border-blue-500 transition-colors"
               />
-              <button
-                onClick={handleAskGemini}
-                disabled={isAiLoading || !aiInput.trim()}
-                className="bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 disabled:text-slate-600 text-white rounded-xl px-4 py-2 flex items-center justify-center transition-colors"
-              >
-                <Send className="w-5 h-5" />
+              <button onClick={handleAskGemini} disabled={isAiLoading || !aiInput.trim()}
+                className="rounded-xl px-3 py-2 flex items-center justify-center transition-all disabled:opacity-30"
+                style={{ backgroundColor: active.accent }}>
+                <Send className="w-4 h-4 text-white" />
               </button>
-            </div>
-          </div>
-        </div>
-
-        {/* Rechte Spalte: Live Spritpreise */}
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col">
-          <h2 className="text-sm font-bold mb-5 flex items-center gap-2 text-slate-300">
-            <Fuel className="w-4 h-4 text-green-400" />
-            Live Sprit · {fuelData.country}
-          </h2>
-
-          <div className="space-y-3">
-            {fuelData.stations.map((station, idx) => (
-              <div
-                key={idx}
-                className={`border rounded-xl p-4 flex justify-between items-center transition-colors ${
-                  idx === 1
-                    ? 'bg-green-950/20 border-green-900/50 hover:border-green-700/50'
-                    : 'bg-slate-950 border-slate-800 hover:border-slate-600'
-                }`}
-              >
-                <div>
-                  <div className="font-medium text-slate-200 text-sm">{station.name}</div>
-                  <div className="text-xs text-slate-500 mt-1 flex items-center gap-1">
-                    <Navigation className="w-3 h-3" /> In {station.distance}
-                  </div>
-                </div>
-                <div className="text-right">
-                  <div className={`text-xl font-bold ${idx === 1 ? 'text-green-400' : 'text-white'}`}>
-                    {station.price}
-                    <span className="text-xs text-slate-500 ml-1">{fuelData.currency}</span>
-                  </div>
-                  {idx === 1 && <span className="text-xs text-green-500">Bester Preis</span>}
-                </div>
-              </div>
-            ))}
-          </div>
-
-          <div className="mt-auto pt-5">
-            <div className="bg-blue-950/30 border border-blue-900/50 rounded-xl p-4">
-              <p className="text-xs text-blue-200 leading-relaxed">
-                <strong className="block text-blue-400 mb-1">KI-Spartipp:</strong>
-                Vor der Schweizer Grenze volltanken! In der Schweiz sind Preise in CHF – often günstiger als Deutschland, aber Wechselkurs beachten.
-              </p>
             </div>
           </div>
         </div>
